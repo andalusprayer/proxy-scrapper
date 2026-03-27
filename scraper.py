@@ -2,7 +2,7 @@ import asyncio
 import ipaddress
 import logging
 import re
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -13,6 +13,7 @@ PROXY_PATTERN = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3}):(\d{2,5})\b")
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 USER_AGENT = "proxy-api-aggregator/1.0"
 PROTOCOLS = ("http", "socks4", "socks5")
+DATASETS = ("all", "live")
 
 logger = logging.getLogger(__name__)
 
@@ -73,42 +74,71 @@ class ProxyEntry:
     def value(self) -> str:
         return f"{self.ip}:{self.port}"
 
+    def to_dict(self) -> dict[str, str | int]:
+        return {
+            "ip": self.ip,
+            "port": self.port,
+            "protocol": self.protocol,
+        }
+
+    @classmethod
+    def from_dict(cls, proxy: Mapping[str, object]) -> "ProxyEntry":
+        return cls(
+            ip=str(proxy["ip"]),
+            port=int(proxy["port"]),
+            protocol=str(proxy["protocol"]),
+        )
+
 
 class ProxyStore:
     def __init__(self) -> None:
-        self._data: dict[str, set[ProxyEntry]] = _empty_proxy_map()
+        self._data: dict[str, dict[str, set[ProxyEntry]]] = _empty_store()
         self.updated_at: datetime | None = None
+        self.validated_at: datetime | None = None
         self._lock = asyncio.Lock()
 
-    async def replace(self, proxies: dict[str, set[ProxyEntry]]) -> None:
+    async def replace(self, all_proxies: dict[str, set[ProxyEntry]], live_proxies: dict[str, set[ProxyEntry]]) -> None:
+        now = datetime.now(timezone.utc)
         async with self._lock:
             self._data = {
-                protocol: set(proxies.get(protocol, set()))
-                for protocol in PROTOCOLS
+                "all": _normalize_proxy_map(all_proxies),
+                "live": _normalize_proxy_map(live_proxies),
             }
-            self.updated_at = datetime.now(timezone.utc)
+            self.updated_at = now
+            self.validated_at = now
 
-    async def get(self, protocol: str | None = None) -> dict[str, list[ProxyEntry]] | list[ProxyEntry]:
+    async def update_live(self, live_proxies: dict[str, set[ProxyEntry]]) -> None:
         async with self._lock:
-            if protocol:
-                return sorted(self._data[protocol], key=_sort_key)
-            return {
-                name: sorted(entries, key=_sort_key)
-                for name, entries in self._data.items()
-            }
+            self._data["live"] = _normalize_proxy_map(live_proxies)
+            self.validated_at = datetime.now(timezone.utc)
 
-    async def stats(self) -> dict[str, int | str | None]:
+    async def get(self, protocol: str, validated: bool = False) -> list[ProxyEntry]:
+        dataset = "live" if validated else "all"
         async with self._lock:
-            http_count = len(self._data["http"])
-            socks4_count = len(self._data["socks4"])
-            socks5_count = len(self._data["socks5"])
-            return {
-                "total": http_count + socks4_count + socks5_count,
-                "http": http_count,
-                "socks4": socks4_count,
-                "socks5": socks5_count,
+            return sorted(self._data[dataset][protocol], key=_sort_key)
+
+    async def get_all_proxy_dicts(self) -> list[dict[str, str | int]]:
+        async with self._lock:
+            return flatten_proxy_map(self._data["all"])
+
+    async def stats(self) -> dict[str, object]:
+        async with self._lock:
+            stats: dict[str, object] = {
+                "total_scraped": 0,
+                "total_live": 0,
                 "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+                "validated_at": self.validated_at.isoformat() if self.validated_at else None,
             }
+            for protocol in PROTOCOLS:
+                scraped = len(self._data["all"][protocol])
+                live = len(self._data["live"][protocol])
+                stats[protocol] = {
+                    "scraped": scraped,
+                    "live": live,
+                }
+                stats["total_scraped"] += scraped
+                stats["total_live"] += live
+            return stats
 
 
 async def fetch_all_proxies() -> dict[str, set[ProxyEntry]]:
@@ -189,6 +219,25 @@ async def _fetch_json_source(session: aiohttp.ClientSession, url: str, protocol:
     return list(entries)
 
 
+def flatten_proxy_map(proxies: dict[str, set[ProxyEntry]]) -> list[dict[str, str | int]]:
+    items: list[dict[str, str | int]] = []
+    for protocol in PROTOCOLS:
+        items.extend(entry.to_dict() for entry in sorted(proxies.get(protocol, set()), key=_sort_key))
+    return items
+
+
+def group_proxy_dicts(proxies: list[dict[str, str | int]]) -> dict[str, set[ProxyEntry]]:
+    grouped = _empty_proxy_map()
+    for proxy in proxies:
+        try:
+            entry = ProxyEntry.from_dict(proxy)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if entry.protocol in PROTOCOLS and _is_valid_proxy(entry.ip, entry.port):
+            grouped[entry.protocol].add(entry)
+    return grouped
+
+
 def _parse_raw_text(text: str, protocol: str) -> Iterable[ProxyEntry]:
     seen: set[tuple[str, int]] = set()
     for ip, port in PROXY_PATTERN.findall(text):
@@ -224,6 +273,14 @@ def _coerce_port(value: object) -> int | None:
 
 def _empty_proxy_map() -> dict[str, set[ProxyEntry]]:
     return {protocol: set() for protocol in PROTOCOLS}
+
+
+def _empty_store() -> dict[str, dict[str, set[ProxyEntry]]]:
+    return {dataset: _empty_proxy_map() for dataset in DATASETS}
+
+
+def _normalize_proxy_map(proxies: dict[str, set[ProxyEntry]]) -> dict[str, set[ProxyEntry]]:
+    return {protocol: set(proxies.get(protocol, set())) for protocol in PROTOCOLS}
 
 
 def _sort_key(item: ProxyEntry) -> tuple[tuple[int, ...], int]:

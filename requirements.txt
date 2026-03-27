@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
-aiohttp
+aiohttp[speedups]
+aiohttp-socks
 beautifulsoup4
 lxml
 apscheduler
