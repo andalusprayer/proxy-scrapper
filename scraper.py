@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import ipaddress
 import logging
 import re
@@ -26,6 +27,16 @@ TEXT_SOURCES = {
         "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
         "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
         "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=5000&country=all",
+        "https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/proxies.txt",
+        "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/http.txt",
+        "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/http.txt",
+        "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/http.txt",
+        "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
+        "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt",
+        "https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/proxy_files/http_proxies.txt",
+        "https://raw.githubusercontent.com/casals-ar/proxy-list/main/http.txt",
+        "https://api.openproxylist.xyz/http.txt",
+        "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=http&timeout=5000&proxy_format=ipport&format=text",
     ],
     "socks4": [
         "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
@@ -33,6 +44,13 @@ TEXT_SOURCES = {
         "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks4.txt",
         "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS4_RAW.txt",
         "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks4&timeout=5000&country=all",
+        "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks4.txt",
+        "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks4.txt",
+        "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/socks4.txt",
+        "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks4/data.txt",
+        "https://raw.githubusercontent.com/casals-ar/proxy-list/main/socks4.txt",
+        "https://api.openproxylist.xyz/socks4.txt",
+        "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=socks4&timeout=5000&proxy_format=ipport&format=text",
     ],
     "socks5": [
         "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
@@ -41,6 +59,15 @@ TEXT_SOURCES = {
         "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt",
         "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
         "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000&country=all",
+        "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks5.txt",
+        "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks5.txt",
+        "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/socks5.txt",
+        "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt",
+        "https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/SOCKS5.txt",
+        "https://raw.githubusercontent.com/HyperBeats/proxy-list/main/socks5.txt",
+        "https://raw.githubusercontent.com/casals-ar/proxy-list/main/socks5.txt",
+        "https://api.openproxylist.xyz/socks5.txt",
+        "https://api.proxyscrape.com/v3/free-proxy-list/get?request=getproxies&protocol=socks5&timeout=5000&proxy_format=ipport&format=text",
     ],
 }
 
@@ -50,6 +77,10 @@ HTML_SOURCES = {
         "https://www.sslproxies.org/",
     ]
 }
+
+HIDEMY_NAME_SOURCE = "https://hidemy.name/en/proxy-list/"
+FREEPROXYLISTS_SOURCE = "https://freeproxylists.net/"
+ADVANCED_NAME_SOURCE = "https://advanced.name/freeproxy"
 
 JSON_SOURCES = {
     "http": [
@@ -149,6 +180,13 @@ async def fetch_all_proxies() -> dict[str, set[ProxyEntry]]:
             tasks.extend(_fetch_source(session, url, protocol, _fetch_text_source) for url in urls)
         for protocol, urls in HTML_SOURCES.items():
             tasks.extend(_fetch_source(session, url, protocol, _fetch_html_source) for url in urls)
+        tasks.extend(
+            (
+                _fetch_html_site_source(session, HIDEMY_NAME_SOURCE, _fetch_hidemy_name_source),
+                _fetch_html_site_source(session, FREEPROXYLISTS_SOURCE, _fetch_freeproxylists_source),
+                _fetch_html_site_source(session, ADVANCED_NAME_SOURCE, _fetch_advanced_name_source),
+            )
+        )
         for protocol, urls in JSON_SOURCES.items():
             tasks.extend(_fetch_source(session, url, protocol, _fetch_json_source) for url in urls)
         results = await asyncio.gather(*tasks)
@@ -173,6 +211,18 @@ async def _fetch_source(
         return []
 
 
+async def _fetch_html_site_source(
+    session: aiohttp.ClientSession,
+    url: str,
+    fetcher: Callable[[aiohttp.ClientSession, str], Awaitable[list[ProxyEntry]]],
+) -> list[ProxyEntry]:
+    try:
+        return await fetcher(session, url)
+    except Exception as exc:
+        logger.warning("Failed to fetch proxies from %s: %s", url, exc)
+        return []
+
+
 async def _fetch_text_source(session: aiohttp.ClientSession, url: str, protocol: str) -> list[ProxyEntry]:
     async with session.get(url) as response:
         response.raise_for_status()
@@ -181,10 +231,7 @@ async def _fetch_text_source(session: aiohttp.ClientSession, url: str, protocol:
 
 
 async def _fetch_html_source(session: aiohttp.ClientSession, url: str, protocol: str) -> list[ProxyEntry]:
-    async with session.get(url) as response:
-        response.raise_for_status()
-        html = await response.text()
-
+    html = await _fetch_html(session, url)
     soup = BeautifulSoup(html, "lxml")
     entries: set[ProxyEntry] = set()
     for row in soup.select("table tbody tr"):
@@ -199,6 +246,78 @@ async def _fetch_html_source(session: aiohttp.ClientSession, url: str, protocol:
     if entries:
         return list(entries)
     return list(_parse_raw_text(soup.get_text("\n"), protocol))
+
+
+async def _fetch_hidemy_name_source(session: aiohttp.ClientSession, url: str) -> list[ProxyEntry]:
+    html = await _fetch_html(session, url)
+    soup = BeautifulSoup(html, "lxml")
+    entries: set[ProxyEntry] = set()
+    rows = soup.select(".table_block table tbody tr") or soup.select("table tbody tr")
+    for row in rows:
+        cells = row.find_all("td")
+        if len(cells) < 5:
+            continue
+        _extend_entries(
+            entries,
+            ip=cells[0].get_text(strip=True),
+            port_value=cells[1].get_text(strip=True),
+            protocol_text=cells[4].get_text(" ", strip=True),
+            default_protocol="http",
+        )
+    return list(entries)
+
+
+async def _fetch_freeproxylists_source(session: aiohttp.ClientSession, url: str) -> list[ProxyEntry]:
+    html = await _fetch_html(session, url)
+    soup = BeautifulSoup(html, "lxml")
+    entries: set[ProxyEntry] = set()
+    for row in soup.select("table tr"):
+        cells = row.find_all("td")
+        if not cells:
+            continue
+        cell_texts = [cell.get_text(" ", strip=True) for cell in cells]
+        row_text = " ".join(cell_texts)
+        match = PROXY_PATTERN.search(row_text)
+        if match:
+            ip, port = match.groups()
+            _extend_entries(
+                entries,
+                ip=ip,
+                port_value=port,
+                protocol_text=row_text,
+                default_protocol="http",
+            )
+            continue
+        if len(cell_texts) >= 2:
+            _extend_entries(
+                entries,
+                ip=cell_texts[0],
+                port_value=cell_texts[1],
+                protocol_text=row_text,
+                default_protocol="http",
+            )
+    return list(entries)
+
+
+async def _fetch_advanced_name_source(session: aiohttp.ClientSession, url: str) -> list[ProxyEntry]:
+    html = await _fetch_html(session, url)
+    soup = BeautifulSoup(html, "lxml")
+    entries: set[ProxyEntry] = set()
+    rows = soup.select("#table_proxies tbody tr") or soup.select("table tbody tr")
+    for row in rows:
+        cells = row.find_all("td")
+        if len(cells) < 4:
+            continue
+        ip = _decode_advanced_value(cells[1].get("data-ip")) or cells[1].get_text(strip=True)
+        port = _decode_advanced_value(cells[2].get("data-port")) or cells[2].get_text(strip=True)
+        _extend_entries(
+            entries,
+            ip=ip,
+            port_value=port,
+            protocol_text=cells[3].get_text(" ", strip=True),
+            default_protocol="http",
+        )
+    return list(entries)
 
 
 async def _fetch_json_source(session: aiohttp.ClientSession, url: str, protocol: str) -> list[ProxyEntry]:
@@ -236,6 +355,50 @@ def group_proxy_dicts(proxies: list[dict[str, str | int]]) -> dict[str, set[Prox
         if entry.protocol in PROTOCOLS and _is_valid_proxy(entry.ip, entry.port):
             grouped[entry.protocol].add(entry)
     return grouped
+
+
+async def _fetch_html(session: aiohttp.ClientSession, url: str) -> str:
+    async with session.get(url) as response:
+        response.raise_for_status()
+        return await response.text()
+
+
+def _extend_entries(
+    entries: set[ProxyEntry],
+    ip: str,
+    port_value: object,
+    protocol_text: str,
+    default_protocol: str,
+) -> None:
+    port = _coerce_port(port_value)
+    if port is None:
+        return
+    for protocol in _protocols_from_text(protocol_text, default_protocol):
+        if _is_valid_proxy(ip, port):
+            entries.add(ProxyEntry(ip=ip, port=port, protocol=protocol))
+
+
+def _protocols_from_text(text: str, default_protocol: str) -> set[str]:
+    lowered = text.lower()
+    protocols: set[str] = set()
+    if "http" in lowered or "https" in lowered:
+        protocols.add("http")
+    if "socks4" in lowered:
+        protocols.add("socks4")
+    if "socks5" in lowered:
+        protocols.add("socks5")
+    if not protocols and default_protocol in PROTOCOLS:
+        protocols.add(default_protocol)
+    return protocols
+
+
+def _decode_advanced_value(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return base64.b64decode(value).decode("utf-8").strip()
+    except Exception:
+        return None
 
 
 def _parse_raw_text(text: str, protocol: str) -> Iterable[ProxyEntry]:
