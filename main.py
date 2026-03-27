@@ -27,9 +27,20 @@ async def refresh_proxies() -> None:
         scraped_stats = await store.stats()
         logger.info("Stored %s scraped proxies before validation", scraped_stats["total_scraped"])
 
-        live_proxy_dicts = await validate_proxies(flatten_proxy_map(scraped_proxies))
-        validated_at = datetime.now(timezone.utc)
-        await store.update_live(group_proxy_dicts(live_proxy_dicts), validated_at=validated_at)
+        async def flush_live(current_live_proxy_dicts: list[dict[str, str | int]]) -> None:
+            await store.update_live(
+                group_proxy_dicts(current_live_proxy_dicts),
+                validated_at=datetime.now(timezone.utc),
+            )
+
+        live_proxy_dicts = await validate_proxies(
+            flatten_proxy_map(scraped_proxies),
+            on_batch_done=flush_live,
+        )
+        await store.update_live(
+            group_proxy_dicts(live_proxy_dicts),
+            validated_at=datetime.now(timezone.utc),
+        )
         stats = await store.stats()
         logger.info(
             "Proxy refresh completed with %s scraped and %s live proxies",
@@ -45,8 +56,17 @@ async def revalidate_proxies() -> None:
             logger.info("Skipping proxy revalidation because the scrape cache is empty")
             return
 
-        live_proxy_dicts = await validate_proxies(all_proxy_dicts)
-        await store.update_live(group_proxy_dicts(live_proxy_dicts), validated_at=datetime.now(timezone.utc))
+        async def flush_live(current_live_proxy_dicts: list[dict[str, str | int]]) -> None:
+            await store.update_live(
+                group_proxy_dicts(current_live_proxy_dicts),
+                validated_at=datetime.now(timezone.utc),
+            )
+
+        live_proxy_dicts = await validate_proxies(all_proxy_dicts, on_batch_done=flush_live)
+        await store.update_live(
+            group_proxy_dicts(live_proxy_dicts),
+            validated_at=datetime.now(timezone.utc),
+        )
         stats = await store.stats()
         logger.info("Proxy revalidation completed with %s live proxies", stats["total_live"])
 

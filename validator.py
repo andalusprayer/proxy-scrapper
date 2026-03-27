@@ -1,10 +1,12 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 
 import aiohttp
 from aiohttp_socks import ProxyConnector
 
 TEST_URL = "http://httpbin.org/ip"
 TIMEOUT = 8
+VALIDATION_BATCH_SIZE = 2000
 
 
 def _build_proxy_url(proxy: dict[str, str | int]) -> str | None:
@@ -39,14 +41,24 @@ async def check_proxy(session: aiohttp.ClientSession, proxy: dict[str, str | int
         return False
 
 
-async def validate_proxies(proxies: list[dict[str, str | int]], concurrency: int = 200) -> list[dict[str, str | int]]:
+async def validate_proxies(
+    proxies: list[dict[str, str | int]],
+    concurrency: int = 500,
+    on_batch_done: Callable[[list[dict[str, str | int]]], Awaitable[None]] | None = None,
+) -> list[dict[str, str | int]]:
     semaphore = asyncio.Semaphore(concurrency)
     connector = aiohttp.TCPConnector(limit=concurrency)
+    live_proxies: list[dict[str, str | int]] = []
     async with aiohttp.ClientSession(connector=connector) as session:
         async def run_check(proxy: dict[str, str | int]) -> bool:
             async with semaphore:
                 return await check_proxy(session, proxy)
 
-        results = await asyncio.gather(*(run_check(proxy) for proxy in proxies))
+        for index in range(0, len(proxies), VALIDATION_BATCH_SIZE):
+            batch = proxies[index:index + VALIDATION_BATCH_SIZE]
+            results = await asyncio.gather(*(run_check(proxy) for proxy in batch))
+            live_proxies.extend(proxy for proxy, ok in zip(batch, results) if ok)
+            if on_batch_done is not None:
+                await on_batch_done(list(live_proxies))
 
-    return [proxy for proxy, ok in zip(proxies, results) if ok]
+    return live_proxies
