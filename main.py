@@ -22,8 +22,14 @@ startup_tasks: set[asyncio.Task[None]] = set()
 async def refresh_proxies() -> None:
     async with job_lock:
         scraped_proxies = await fetch_all_proxies()
+        updated_at = datetime.now(timezone.utc)
+        await store.replace(scraped_proxies, updated_at=updated_at)
+        scraped_stats = await store.stats()
+        logger.info("Stored %s scraped proxies before validation", scraped_stats["total_scraped"])
+
         live_proxy_dicts = await validate_proxies(flatten_proxy_map(scraped_proxies))
-        await store.replace(scraped_proxies, group_proxy_dicts(live_proxy_dicts))
+        validated_at = datetime.now(timezone.utc)
+        await store.update_live(group_proxy_dicts(live_proxy_dicts), validated_at=validated_at)
         stats = await store.stats()
         logger.info(
             "Proxy refresh completed with %s scraped and %s live proxies",
@@ -40,7 +46,7 @@ async def revalidate_proxies() -> None:
             return
 
         live_proxy_dicts = await validate_proxies(all_proxy_dicts)
-        await store.update_live(group_proxy_dicts(live_proxy_dicts))
+        await store.update_live(group_proxy_dicts(live_proxy_dicts), validated_at=datetime.now(timezone.utc))
         stats = await store.stats()
         logger.info("Proxy revalidation completed with %s live proxies", stats["total_live"])
 

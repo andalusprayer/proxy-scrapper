@@ -107,20 +107,17 @@ class ProxyStore:
         self.validated_at: datetime | None = None
         self._lock = asyncio.Lock()
 
-    async def replace(self, all_proxies: dict[str, set[ProxyEntry]], live_proxies: dict[str, set[ProxyEntry]]) -> None:
-        now = datetime.now(timezone.utc)
+    async def replace(self, all_proxies: dict[str, set[ProxyEntry]], updated_at: datetime) -> None:
         async with self._lock:
-            self._data = {
-                "all": _normalize_proxy_map(all_proxies),
-                "live": _normalize_proxy_map(live_proxies),
-            }
-            self.updated_at = now
-            self.validated_at = now
+            self._data["all"] = _normalize_proxy_map(all_proxies)
+            self._data["live"] = _empty_proxy_map()
+            self.updated_at = updated_at
+            self.validated_at = None
 
-    async def update_live(self, live_proxies: dict[str, set[ProxyEntry]]) -> None:
+    async def update_live(self, live_proxies: dict[str, set[ProxyEntry]], validated_at: datetime) -> None:
         async with self._lock:
             self._data["live"] = _normalize_proxy_map(live_proxies)
-            self.validated_at = datetime.now(timezone.utc)
+            self.validated_at = validated_at
 
     async def get(self, protocol: str, validated: bool = False) -> list[ProxyEntry]:
         dataset = "live" if validated else "all"
