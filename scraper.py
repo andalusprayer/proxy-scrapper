@@ -124,6 +124,10 @@ class ProxyStore:
         async with self._lock:
             return sorted(self._data[dataset][protocol], key=_sort_key)
 
+    async def get_live(self, protocol: str) -> list[ProxyEntry]:
+        async with self._lock:
+            return sorted(self._data["live"][protocol], key=_sort_key)
+
     async def get_all_proxy_dicts(self) -> list[dict[str, str | int]]:
         async with self._lock:
             return flatten_proxy_map(self._data["all"])

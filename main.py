@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 from collections.abc import Coroutine
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,8 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 store = ProxyStore()
 job_lock = asyncio.Lock()
 startup_tasks: set[asyncio.Task[None]] = set()
+rotation_lock = asyncio.Lock()
+rotation_indices = {protocol: 0 for protocol in PROTOCOLS}
 
 
 async def refresh_proxies() -> None:
@@ -91,6 +94,23 @@ def _to_plain_text(proxies: list[ProxyEntry]) -> str:
     return "\n".join(proxy.value for proxy in proxies)
 
 
+async def _get_live_proxies(protocol: str) -> list[ProxyEntry]:
+    if protocol not in PROTOCOLS:
+        raise HTTPException(status_code=404, detail="Protocol not found")
+    return await store.get_live(protocol)
+
+
+def _no_live_proxies_response() -> JSONResponse:
+    return JSONResponse(status_code=503, content={"error": "no live proxies"})
+
+
+async def _next_rotated_proxy(protocol: str, proxies: list[ProxyEntry]) -> ProxyEntry:
+    async with rotation_lock:
+        index = rotation_indices[protocol] % len(proxies)
+        rotation_indices[protocol] = (index + 1) % len(proxies)
+        return proxies[index]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _spawn_background_task(refresh_proxies())
@@ -161,3 +181,32 @@ async def get_protocol_proxies(
     proxies = await store.get(protocol, validated=validated)
     limited = proxies[:limit] if limit is not None else proxies
     return PlainTextResponse(_to_plain_text(limited))
+
+
+@app.get("/random/{protocol}/batch")
+async def get_random_proxy_batch(
+    protocol: str,
+    count: int = Query(10, ge=1, le=100),
+):
+    proxies = await _get_live_proxies(protocol)
+    if not proxies:
+        return _no_live_proxies_response()
+    selected = random.sample(proxies, k=min(count, len(proxies)))
+    return PlainTextResponse(_to_plain_text(selected))
+
+
+@app.get("/random/{protocol}")
+async def get_random_proxy(protocol: str):
+    proxies = await _get_live_proxies(protocol)
+    if not proxies:
+        return _no_live_proxies_response()
+    return PlainTextResponse(random.choice(proxies).value)
+
+
+@app.get("/rotate/{protocol}")
+async def get_rotated_proxy(protocol: str):
+    proxies = await _get_live_proxies(protocol)
+    if not proxies:
+        return _no_live_proxies_response()
+    proxy = await _next_rotated_proxy(protocol, proxies)
+    return PlainTextResponse(proxy.value)
